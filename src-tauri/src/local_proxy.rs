@@ -803,7 +803,7 @@ pub async fn set_target_host(state: &Arc<LocalProxyState>, host: String) -> Resu
     {
         let mut target = state.target_host.write().await;
         log::info!("[proxy] Target host set to: {}", host);
-        *target = Some(host);
+        *target = Some(host.clone());
     }
 
     // Propagate bind failures. If the critical port can't be taken we must
