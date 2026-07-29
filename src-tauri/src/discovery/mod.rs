@@ -501,12 +501,18 @@ pub async fn probe_wifi_host_status(
 
     if !response.status().is_success() {
         let status = response.status();
-        log::warn!("[discovery] WiFi daemon status probe returned HTTP {}", status);
+        log::warn!(
+            "[discovery] WiFi daemon status probe returned HTTP {}",
+            status
+        );
         return Err(format!("HTTP {}", status));
     }
 
     let body = response.json::<Value>().await.map_err(|e| {
-        log::warn!("[discovery] WiFi daemon status probe returned invalid JSON: {}", e);
+        log::warn!(
+            "[discovery] WiFi daemon status probe returned invalid JSON: {}",
+            e
+        );
         format!("Invalid JSON: {}", e)
     })?;
 

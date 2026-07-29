@@ -810,11 +810,7 @@ pub async fn set_target_host(state: &Arc<LocalProxyState>, host: String) -> Resu
     // NOT leave a target configured because future commands would silently
     // hit the conflicting service on localhost:8000.
     if let Err(e) = start_local_proxy(state.clone()).await {
-        log::error!(
-            "[proxy] Proxy startup failed for target {}: {}",
-            host,
-            e
-        );
+        log::error!("[proxy] Proxy startup failed for target {}: {}", host, e);
         let mut target = state.target_host.write().await;
         *target = None;
         return Err(e);
