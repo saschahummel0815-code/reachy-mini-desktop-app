@@ -157,13 +157,13 @@ jobs:
             ".yml"
           )
 
-          $changedFiles = git diff --name-only --diff-filter=ACMRT "$baseSha...HEAD" -- src/ |
+          $changedFiles = @(git diff --name-only --diff-filter=ACMRT "$baseSha...HEAD" -- src/ |
             Where-Object {
               $extension = [System.IO.Path]::GetExtension($_).ToLowerInvariant()
               $prettierExtensions -contains $extension
-            }
+            })
 
-          if (-not $changedFiles) {
+          if ($changedFiles.Count -eq 0) {
             Write-Host "No changed frontend files require Prettier."
             exit 0
           }
@@ -171,7 +171,7 @@ jobs:
           Write-Host "Changed frontend files requiring Prettier:"
           $changedFiles | ForEach-Object { Write-Host "  $_" }
 
-          yarn prettier --check $changedFiles
+          yarn prettier --check @changedFiles
 
       - name: Run frontend lint
         shell: pwsh
