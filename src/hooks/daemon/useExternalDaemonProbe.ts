@@ -5,7 +5,8 @@ import { useWindowVisible } from '../system/useWindowVisible';
 
 /**
  * Probe the local network for a pre-existing ("external") Reachy daemon on
- * localhost:8000 that this app did *not* spawn itself.
+ * 127.0.0.1:8000 that this app did *not* spawn itself.
+ * TASK_REF: AIG-DEV-20260729-120
  *
  * Why this is tricky:
  * 1. Rust owns the sidecar process, so a plain HTTP probe cannot tell whether
@@ -88,7 +89,7 @@ async function probeRustOwnership(): Promise<RustStatusPayload | null> {
 async function probeDaemonStatusEndpoint(timeoutMs: number): Promise<boolean> {
   try {
     const response = await fetchWithTimeout(
-      'http://localhost:8000/api/daemon/status',
+      `${DAEMON_CONFIG.ENDPOINTS.BASE_URL_LOCAL}/api/daemon/status`,
       {},
       timeoutMs,
       { silent: true }
@@ -103,9 +104,12 @@ async function probeDaemonStatusEndpoint(timeoutMs: number): Promise<boolean> {
 
 async function probeReachyShape(timeoutMs: number): Promise<boolean> {
   try {
-    const response = await fetchWithTimeout('http://localhost:8000/api/state/full', {}, timeoutMs, {
-      silent: true,
-    });
+    const response = await fetchWithTimeout(
+      `${DAEMON_CONFIG.ENDPOINTS.BASE_URL_LOCAL}/api/state/full`,
+      {},
+      timeoutMs,
+      { silent: true }
+    );
     return response.ok;
   } catch {
     return false;

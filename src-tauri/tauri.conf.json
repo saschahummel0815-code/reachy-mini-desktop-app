@@ -51,7 +51,8 @@
       "binaries/uv-trampoline"
     ],
     "resources": [
-      "../scripts/avast_ssl_fix.py"
+      "../scripts/avast_ssl_fix.py",
+      "../scripts/diagnostics/windows-wifi-diagnostics.ps1"
     ]
   },
   "plugins": {

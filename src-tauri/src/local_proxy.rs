@@ -6,6 +6,7 @@
 //! This bypasses browser Private Network Access (PNA) restrictions.
 //!
 //! The proxy only runs when in WiFi mode (when a target host is set).
+//! TASK_REF: AIG-DEV-20260729-120
 //!
 //! When the target host changes (switching robots), all existing connections are
 //! killed via a generation counter so that HTTP keep-alive pipes don't forward
@@ -125,9 +126,19 @@ async fn start_local_proxy(state: Arc<LocalProxyState>) -> Result<(), String> {
 
     // Don't start if already running
     if !handles.is_empty() {
-        log::warn!("[proxy] Proxy already running");
+        log::warn!("[proxy] Proxy startup skipped: already running");
         return Ok(());
     }
+
+    let target = get_target_host(&state)
+        .await
+        .unwrap_or_else(|| "<unset>".to_string());
+    log::info!(
+        "[proxy] Starting local proxy: target={} tcp_ports={:?} udp_ports={:?}",
+        target,
+        TCP_PROXY_PORTS,
+        UDP_PROXY_PORTS
+    );
 
     let mut ready_rxs: Vec<oneshot::Receiver<BindReport>> = Vec::new();
 
@@ -163,7 +174,26 @@ async fn start_local_proxy(state: Arc<LocalProxyState>) -> Result<(), String> {
     let mut reports: Vec<BindReport> = Vec::with_capacity(ready_rxs.len());
     for rx in ready_rxs {
         match tokio::time::timeout(BIND_CONFIRMATION_TIMEOUT, rx).await {
-            Ok(Ok(report)) => reports.push(report),
+            Ok(Ok(report)) => {
+                match &report.result {
+                    Ok(()) => log::info!(
+                        "[proxy] Bind confirmed: {}/{} -> {}:{}",
+                        report.protocol,
+                        report.port,
+                        target,
+                        report.port
+                    ),
+                    Err(reason) => log::warn!(
+                        "[proxy] Bind failed: {}/{} target={}:{} reason={}",
+                        report.protocol,
+                        report.port,
+                        target,
+                        report.port,
+                        reason
+                    ),
+                }
+                reports.push(report);
+            }
             Ok(Err(_)) => {
                 // Sender dropped without reporting (unreachable in practice
                 // unless a proxy task panics before bind). Surface as a
@@ -251,8 +281,18 @@ async fn stop_local_proxy(state: &Arc<LocalProxyState>) {
     let mut handles = state.proxy_handles.lock().await;
 
     if handles.is_empty() {
+        log::info!("[proxy] Proxy shutdown skipped: no listeners running");
         return;
     }
+
+    let target = get_target_host(state)
+        .await
+        .unwrap_or_else(|| "<unset>".to_string());
+    log::info!(
+        "[proxy] Stopping local proxy: target={} listeners={}",
+        target,
+        handles.len()
+    );
 
     // Bump generation — this wakes all connection handlers via their
     // watch::Receiver::changed() branch, causing them to drop their
@@ -277,9 +317,10 @@ async fn start_tcp_proxy(
     ready_tx: oneshot::Sender<BindReport>,
 ) {
     let bind_addr = format!("127.0.0.1:{}", port);
+    log::info!("[proxy] TCP bind attempt: {}", bind_addr);
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(l) => {
-            log::info!("[proxy] TCP listening on localhost:{}", port);
+            log::info!("[proxy] TCP listening on {}", bind_addr);
             let _ = ready_tx.send(BindReport {
                 port,
                 protocol: "tcp",
@@ -333,9 +374,10 @@ async fn start_udp_proxy(
     ready_tx: oneshot::Sender<BindReport>,
 ) {
     let bind_addr = format!("127.0.0.1:{}", port);
+    log::info!("[proxy] UDP bind attempt: {}", bind_addr);
     let local_socket = match UdpSocket::bind(&bind_addr).await {
         Ok(s) => {
-            log::info!("[proxy] UDP listening on localhost:{}", port);
+            log::info!("[proxy] UDP listening on {}", bind_addr);
             let _ = ready_tx.send(BindReport {
                 port,
                 protocol: "udp",
@@ -742,6 +784,8 @@ fn is_private_network_host(host: &str) -> bool {
 /// via the generation counter, preventing stale HTTP keep-alive pipes
 /// from forwarding requests to the old robot.
 pub async fn set_target_host(state: &Arc<LocalProxyState>, host: String) -> Result<(), String> {
+    log::info!("[proxy] set_target_host requested: {}", host);
+
     if host.is_empty() {
         return Err("Proxy target host cannot be empty".to_string());
     }
@@ -766,15 +810,23 @@ pub async fn set_target_host(state: &Arc<LocalProxyState>, host: String) -> Resu
     // NOT leave a target configured because future commands would silently
     // hit the conflicting service on localhost:8000.
     if let Err(e) = start_local_proxy(state.clone()).await {
+        log::error!(
+            "[proxy] Proxy startup failed for target {}: {}",
+            host,
+            e
+        );
         let mut target = state.target_host.write().await;
         *target = None;
         return Err(e);
     }
+    log::info!("[proxy] Proxy startup completed for target {}", host);
     Ok(())
 }
 
 /// Clear the target host and stop the proxy
 pub async fn clear_target_host(state: &Arc<LocalProxyState>) {
+    log::info!("[proxy] clear_target_host requested");
+
     // Stop the proxy first
     stop_local_proxy(state).await;
 

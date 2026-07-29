@@ -8,11 +8,13 @@
 //!
 //! This replaces the old system command-based WiFi scanning with a native
 //! Rust implementation that's faster, more reliable, and cross-platform.
+//! TASK_REF: AIG-DEV-20260729-120
 
 use crate::daemon::DAEMON_PORT;
 use futures_util::future::join_all;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,6 +28,13 @@ pub struct RobotInfo {
     pub port: u16,
     pub discovery_method: String, // "cache", "mdns", "static", "manual"
     pub hostname: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WifiProbeStatus {
+    pub state: Option<Value>,
+    pub status: Option<Value>,
+    pub version: Option<String>,
 }
 
 /// Discovery configuration and cache
@@ -134,6 +143,24 @@ fn pick_best_addr(addrs: &std::collections::HashSet<mdns_sd::ScopedIp>) -> Optio
         .find(|a| a.to_ip_addr().is_ipv4())
         .or_else(|| addrs.iter().next())
         .map(|a| a.to_ip_addr().to_string())
+}
+
+fn normalize_probe_host(host: &str, default_port: u16) -> Result<String, String> {
+    let trimmed = host
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+
+    if trimmed.is_empty() {
+        return Err("Host cannot be empty".to_string());
+    }
+
+    if trimmed.contains(':') {
+        Ok(trimmed.to_string())
+    } else {
+        Ok(format!("{}:{}", trimmed, default_port))
+    }
 }
 
 const MDNS_SERVICE_REACHY: &str = "_reachy-mini._tcp.local.";
@@ -443,6 +470,56 @@ pub async fn connect_to_ip(
             Err(format!("Could not connect to {}: {}", ip, e))
         }
     }
+}
+
+/// Browser/WebView-safe WiFi pre-flight probe.
+///
+/// On Windows, WebView2 may block direct private-network fetches from the
+/// frontend before the local proxy has been started. This command performs the
+/// same daemon-status probe from Rust, where discovery already succeeds.
+#[tauri::command]
+pub async fn probe_wifi_host_status(
+    host: String,
+    state: tauri::State<'_, DiscoveryState>,
+) -> Result<WifiProbeStatus, String> {
+    let port = DAEMON_PORT;
+    let normalized = normalize_probe_host(&host, port)?;
+    let url = format!("http://{}/api/daemon/status", normalized);
+
+    log::info!("[discovery] Probing WiFi daemon status via Rust: {}", url);
+
+    let response = state
+        .http_client
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .map_err(|e| {
+            log::warn!("[discovery] WiFi daemon status probe failed: {}", e);
+            format!("Connection failed: {}", e)
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        log::warn!("[discovery] WiFi daemon status probe returned HTTP {}", status);
+        return Err(format!("HTTP {}", status));
+    }
+
+    let body = response.json::<Value>().await.map_err(|e| {
+        log::warn!("[discovery] WiFi daemon status probe returned invalid JSON: {}", e);
+        format!("Invalid JSON: {}", e)
+    })?;
+
+    let version = body
+        .get("version")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+
+    Ok(WifiProbeStatus {
+        state: body.get("state").cloned(),
+        status: body.get("status").cloned(),
+        version,
+    })
 }
 
 /// Add a static peer IP (user configuration)

@@ -685,6 +685,7 @@ pub fn run() {
             // Robot discovery (mDNS + manual IP)
             discovery::discover_robots,
             discovery::connect_to_ip,
+            discovery::probe_wifi_host_status,
             discovery::add_static_peer,
             discovery::remove_static_peer,
             discovery::get_static_peers,

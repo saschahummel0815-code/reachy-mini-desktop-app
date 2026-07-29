@@ -3,6 +3,7 @@
  *
  * Abstracts USB, WiFi, and Simulation modes behind a single interface.
  * The rest of the app doesn't need to know which mode is active.
+ * TASK_REF: AIG-DEV-20260729-120
  *
  * @example
  * const { connect, disconnect, isConnected, fetchApi } = useConnection();
@@ -32,6 +33,7 @@ import {
 } from '../config/daemon';
 import { enableSimulationMode } from '../utils/simulationMode';
 import { telemetry } from '../utils/telemetry';
+import { logError } from '../utils/logging';
 import type { ConnectionMode as ConnectionModeType } from '../types/robot';
 
 /**
@@ -160,6 +162,7 @@ export function useConnection(): UseConnectionResult {
               error_type: 'proxy_bind_failed',
               error_message: message.slice(0, 200),
             });
+            logError(`Local proxy startup failed: ${message}`);
             return false;
           }
           startConnection('wifi', { remoteHost: options.host });
