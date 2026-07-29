@@ -1,12 +1,14 @@
 import { fetchWithTimeout } from '../config/daemon';
 import { MIN_WIRELESS_DAEMON_VERSION } from '../constants/daemonVersion';
 import { isVersionBelow } from './semverCompare';
+import { isWindows } from './platform';
 
 /**
  * Pre-flight validation for a WiFi target host, used before committing to the
  * full `startDaemon` sequence. Returns a definitive outcome so the caller can
  * decide whether to connect, force a daemon update, or surface a clear error
  * instead of waiting out the ~90s startup timeout when the address is wrong.
+ * TASK_REF: AIG-DEV-20260729-120
  *
  * Scope (minimal on purpose):
  *   - Confirm the host is reachable on port 8000.
@@ -32,6 +34,13 @@ interface DaemonStatusBody {
   state?: unknown;
   status?: unknown;
   version?: unknown;
+}
+
+class WrongServiceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WrongServiceError';
+  }
 }
 
 function normalizeHost(host: string): string {
@@ -62,6 +71,25 @@ export interface WifiProbeResult {
   minVersion: string;
 }
 
+async function fetchStatusViaRust(host: string): Promise<DaemonStatusBody> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return (await invoke('probe_wifi_host_status', { host })) as DaemonStatusBody;
+}
+
+async function fetchStatusViaBrowser(base: string): Promise<DaemonStatusBody> {
+  const response = await fetchWithTimeout(`${base}/api/daemon/status`, {}, PROBE_TIMEOUT_MS, {
+    silent: true,
+  });
+  if (!response.ok) {
+    throw new WrongServiceError(`HTTP ${response.status}`);
+  }
+  try {
+    return (await response.json()) as DaemonStatusBody;
+  } catch (error) {
+    throw new WrongServiceError(error instanceof Error ? error.message : 'Invalid JSON');
+  }
+}
+
 /**
  * Probe a remote host to confirm it's running a Reachy daemon. Short-timeout,
  * no retries: callers are expected to fail fast and let the user correct the
@@ -74,10 +102,9 @@ export async function probeWifiHost(host: string): Promise<WifiProbeResult> {
 
   let statusBody: DaemonStatusBody | null = null;
   try {
-    const response = await fetchWithTimeout(`${base}/api/daemon/status`, {}, PROBE_TIMEOUT_MS, {
-      silent: true,
-    });
-    if (!response.ok) {
+    statusBody = isWindows() ? await fetchStatusViaRust(host) : await fetchStatusViaBrowser(base);
+  } catch (error) {
+    if (error instanceof WrongServiceError) {
       return {
         ok: false,
         reason: 'wrong_service',
@@ -85,18 +112,6 @@ export async function probeWifiHost(host: string): Promise<WifiProbeResult> {
         minVersion: MIN_WIRELESS_DAEMON_VERSION,
       };
     }
-    try {
-      statusBody = (await response.json()) as DaemonStatusBody;
-    } catch {
-      // Non-JSON body on /api/daemon/status → definitely not a Reachy daemon.
-      return {
-        ok: false,
-        reason: 'wrong_service',
-        version: null,
-        minVersion: MIN_WIRELESS_DAEMON_VERSION,
-      };
-    }
-  } catch {
     return {
       ok: false,
       reason: 'unreachable',

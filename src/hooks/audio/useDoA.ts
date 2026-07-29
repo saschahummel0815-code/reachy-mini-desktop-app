@@ -91,8 +91,9 @@ export function useDoA(isActive: boolean): UseDoAResult {
 export function getDoADirection(angleRad: number | null): string {
   if (angleRad === null) return 'unknown';
 
-  // Normalize to 0-π range.
-  const normalized = Math.abs(angleRad % Math.PI);
+  // DoA is documented as 0-π. Clamp drift outside that range without wrapping
+  // π back to 0.
+  const normalized = Math.min(Math.abs(angleRad), Math.PI);
 
   if (normalized < Math.PI / 6) return 'left';
   if (normalized < Math.PI / 3) return 'front-left';

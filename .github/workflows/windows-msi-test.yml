@@ -1,0 +1,242 @@
+name: Windows MSI Test Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - ".github/workflows/windows-msi-test.yml"
+      - "package.json"
+      - "yarn.lock"
+      - "src/**"
+      - "src-tauri/**"
+      - "uv-wrapper/**"
+      - "scripts/build/**"
+      - "scripts/diagnostics/**"
+
+permissions:
+  contents: read
+
+env:
+  TASK_REF: AIG-DEV-20260729-120
+  NODE_VERSION: "24.11.1"
+  RUST_TARGET: x86_64-pc-windows-msvc
+  REACHY_MINI_VERSION: 1.8.0
+
+jobs:
+  build-windows-msi:
+    name: Build Windows x64 MSI
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Enable Yarn
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          node --version
+          yarn --version
+
+      - name: Setup Rust MSVC
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.RUST_TARGET }}
+          components: rustfmt, clippy
+
+      - name: Verify Windows build tools
+        shell: pwsh
+        run: |
+          rustc -Vv
+          cargo -V
+          rustup target list --installed
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found. Visual Studio Build Tools are missing from the runner."
+          }
+
+          & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSVC x64 build tools are not installed."
+          }
+
+          $webViewRuntime = Get-ChildItem `
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients", `
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients" `
+            -ErrorAction SilentlyContinue |
+            Get-ItemProperty |
+            Where-Object { $_.name -match "WebView2" } |
+            Select-Object -First 1
+
+          if (-not $webViewRuntime) {
+            Write-Warning "WebView2 runtime registry entry not found; windows-latest usually includes it."
+          } else {
+            Write-Host "WebView2 runtime detected: $($webViewRuntime.name) $($webViewRuntime.pv)"
+          }
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+            uv-wrapper -> target
+          cache-on-failure: true
+          shared-key: windows-msvc-${{ env.RUST_TARGET }}-v1
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        run: yarn install --frozen-lockfile
+
+      - name: Build Windows sidecar
+        shell: pwsh
+        run: |
+          pwsh -File ./scripts/build/build-sidecar-windows.ps1
+          $sidecar = "src-tauri/binaries/uv-trampoline-${env:RUST_TARGET}.exe"
+          if (-not (Test-Path $sidecar)) {
+            Get-ChildItem src-tauri/binaries -ErrorAction SilentlyContinue
+            throw "Sidecar not found: $sidecar"
+          }
+          Get-Item $sidecar | Format-List FullName, Length
+
+      - name: Check frontend formatting
+        shell: pwsh
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $baseSha = $env:PR_BASE_SHA
+          if ([string]::IsNullOrWhiteSpace($baseSha)) {
+            git fetch --no-tags --prune origin $env:DEFAULT_BRANCH
+            $baseSha = git merge-base HEAD "origin/$env:DEFAULT_BRANCH"
+          } else {
+            git cat-file -e "$baseSha^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              git fetch --no-tags --prune origin $baseSha
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($baseSha)) {
+            throw "Unable to determine base SHA for frontend formatting check."
+          }
+
+          Write-Host "Checking frontend formatting for changes since $baseSha"
+
+          $prettierExtensions = @(
+            ".css",
+            ".graphql",
+            ".gql",
+            ".html",
+            ".js",
+            ".jsx",
+            ".json",
+            ".jsonc",
+            ".json5",
+            ".less",
+            ".mjs",
+            ".md",
+            ".mdx",
+            ".mts",
+            ".scss",
+            ".ts",
+            ".tsx",
+            ".vue",
+            ".yaml",
+            ".yml"
+          )
+
+          $changedFiles = @(git diff --name-only --diff-filter=ACMRT "$baseSha...HEAD" -- src/ |
+            Where-Object {
+              $extension = [System.IO.Path]::GetExtension($_).ToLowerInvariant()
+              $prettierExtensions -contains $extension
+            })
+
+          if ($changedFiles.Count -eq 0) {
+            Write-Host "No changed frontend files require Prettier."
+            exit 0
+          }
+
+          Write-Host "Changed frontend files requiring Prettier:"
+          $changedFiles | ForEach-Object { Write-Host "  $_" }
+
+          yarn prettier --check @changedFiles
+
+      - name: Run frontend lint
+        shell: pwsh
+        run: yarn lint
+
+      - name: Run TypeScript check
+        shell: pwsh
+        run: yarn typecheck
+
+      - name: Run frontend tests
+        shell: pwsh
+        run: yarn test
+
+      - name: Check Rust formatting
+        shell: pwsh
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Run Rust clippy
+        shell: pwsh
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --target $env:RUST_TARGET -- -D warnings
+
+      - name: Run Rust check
+        shell: pwsh
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target $env:RUST_TARGET
+
+      - name: Build Windows x64 MSI
+        shell: pwsh
+        env:
+          # The test MSI does not publish updater artifacts, but Tauri may still
+          # read updater signing configuration. A temporary CI key keeps this
+          # build independent from release secrets.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          yarn tauri signer generate -w "$env:RUNNER_TEMP\reachy-mini-test.key" --ci
+          $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:RUNNER_TEMP\reachy-mini-test.key" -Raw
+          yarn tauri build --target $env:RUST_TARGET --bundles msi
+
+      - name: Collect MSI artifact
+        shell: pwsh
+        run: |
+          $artifactDir = "artifacts\windows-msi"
+          New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+
+          $msiDir = "src-tauri\target\$env:RUST_TARGET\release\bundle\msi"
+          $msi = Get-ChildItem -Path $msiDir -Filter "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $msi) {
+            Get-ChildItem -Path "src-tauri\target\$env:RUST_TARGET\release\bundle" -Recurse -ErrorAction SilentlyContinue
+            throw "MSI artifact not found in $msiDir"
+          }
+
+          Copy-Item $msi.FullName -Destination $artifactDir -Force
+          Copy-Item "TESTING.md" -Destination $artifactDir -Force
+          Copy-Item "scripts\diagnostics\windows-wifi-diagnostics.ps1" -Destination $artifactDir -Force
+          Get-ChildItem $artifactDir | Format-Table Name, Length
+
+      - name: Upload Windows MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reachy-mini-control-windows-x64-msi-${{ github.run_number }}
+          path: artifacts/windows-msi/*
+          if-no-files-found: error
+          retention-days: 14

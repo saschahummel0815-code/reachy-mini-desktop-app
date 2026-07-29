@@ -162,7 +162,8 @@ export const DAEMON_CONFIG = {
 
   ENDPOINTS: {
     // BASE_URL is now dynamic - prefer getBaseUrl() over reading these constants directly.
-    BASE_URL_LOCAL: 'http://localhost:8000',
+    // TASK_REF: AIG-DEV-20260729-120 - match the Rust proxy's IPv4 loopback bind on Windows.
+    BASE_URL_LOCAL: 'http://127.0.0.1:8000',
     BASE_URL_DEFAULT_WIFI: 'http://reachy-mini.home:8000',
     STATE_FULL: '/api/state/full',
     DAEMON_STATUS: '/api/daemon/status',
@@ -381,7 +382,7 @@ export async function fetchWithTimeout(
 /**
  * Get the current base URL based on connection mode.
  *
- * In all modes we currently target `http://localhost:8000`. In WiFi mode the
+ * In all modes we currently target `http://127.0.0.1:8000`. In WiFi mode the
  * local Rust proxy forwards to the remote host. This avoids the
  * `tauriFetch` body stream bug by using native fetch everywhere.
  */
